@@ -25,9 +25,10 @@ VoidRP UI legt die Schrift fest im eigenen Jar fest und bietet keine Einstellung
 | Latin-1 (ä ö ü ß é …), „ “ ‚ ‘ und € in den Schriftbögen; Zeichen, die eine Schrift nicht kennt, landen nicht als Kästchen im Bogen | `pack/TextFonts.kt` (`CHARSET`, `bake`) |
 | Eigene Schrift über den `font`-Abschnitt in `theme.yml`: TTF-Dateien aus `plugins/VoidRpUI/fonts/`, `pixel: true` ohne Kantenglättung, eigene Größen | `pack/TextFonts.kt` (`Face`), `VoidRpUiPlugin.onEnable`, `docs/theming.md` |
 | Item-Icons auch in Größe 48 (dreifach, passend zu einem Pixelraster von 3 Einheiten); vorher nur 16 und 32, ein 48er-Icon kam als 32er oben links im Feld an | `pack/Icons.kt` (`SIZES`) |
+| Eigene Pack-Dateien aus `plugins/VoidRpUI/pack/` (etwa neu texturierte Vanilla-Fenster) kommen unverändert mit ins Ressourcenpaket; Pfade, die VoidRP selbst schreibt, bleiben VoidRPs und werden im Log genannt | `pack/PackBuilder.kt` (`extra`), `VoidRpUiPlugin.onEnable` |
 
-Tests dazu: `PenAccountingTest` (Umlaute in jeder Größe), `FaceTest` (Schrift, Pixelmodus,
-Einstellung).
+Tests dazu: `PenAccountingTest` (Umlaute in jeder Größe, Icons in jeder Größe), `FaceTest`
+(Schrift, Pixelmodus, Einstellung), `PackExtraTest` (eigene Pack-Dateien).
 
 ## Wo was liegt
 

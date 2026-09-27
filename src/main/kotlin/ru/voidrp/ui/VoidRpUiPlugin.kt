@@ -161,18 +161,27 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
         // Baked into the shader, so it is decided before the pack is built.
         ru.voidrp.ui.pack.Shaders.particles = config.getBoolean("effects.particles", true)
 
+        // The server's own pack files — retextured screens, say — travel in the same archive.
+        val extra = File(dataFolder, "pack").apply { mkdirs() }
         packFile = File(dataFolder, "voidrp-ui.zip")
-        packHash = PackBuilder(
+        val modern = PackBuilder(
             shaderMode = config.getString("pack.shader-mode", "patched")!!,
             withOverlay = config.getBoolean("pack.legacy-overlay", false),
-        ).build(packFile)
+            extra = extra,
+        )
+        packHash = modern.build(packFile)
         logger.info("Pack built: ${packFile.name}, ${packFile.length() / 1024} KB, sha1 $packHash")
+        if (modern.extraCount > 0) logger.info("Server's own pack files: ${modern.extraCount} from ${extra.path}")
+        if (modern.skipped.isNotEmpty()) {
+            logger.warning("Left out of the pack, the plugin writes them itself: ${modern.skipped.joinToString(", ")}")
+        }
 
         if (config.getBoolean("pack.legacy", true)) {
             val older = File(dataFolder, "voidrp-ui-legacy.zip")
             legacyHash = PackBuilder(
                 shaderMode = config.getString("pack.shader-mode", "patched")!!,
                 legacy = true,
+                extra = extra,
             ).build(older)
             legacyFile = older
             logger.info(
