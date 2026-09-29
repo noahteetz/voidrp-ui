@@ -5,8 +5,7 @@ grafischen Oberflächen für das Burg-Event
 ([TMB-Castle-Event](https://github.com/noahteetz/TMB-Castle-Event)). Das Original ist
 [VOIDRP-MINECRAFT/voidrp-ui](https://github.com/VOIDRP-MINECRAFT/voidrp-ui) (MIT).
 
-**Wir bleiben dauerhaft beim Fork.** Pull Requests ans Original sind nicht geplant;
-Neuerungen des Originals ziehen wir bei Bedarf nach.
+Das Original hat alle Änderungen dieses Forks mit 0.3.19 übernommen.
 
 ## Warum ein Fork
 
@@ -16,8 +15,9 @@ in Größe 48 und eigene Pack-Dateien aus `plugins/VoidRpUI/pack/`.
 
 **Seit 0.3.19 steckt all das im Original** (Changelog 0.3.19, „From the fork by Noah
 Teetz“). `tmb` weicht derzeit nur um diese Datei und die Versionsnummer vom Original ab.
-Der Fork bleibt trotzdem die Quelle für das Burg-Plugin, damit künftige eigene Änderungen
-wieder hier entstehen können, ohne auf ein Release des Originals zu warten.
+**Der Fork ruht deshalb.** Das Burg-Plugin bezieht VoidRP UI seit 0.3.19 wieder direkt
+vom Original. Braucht es erneut eigene Änderungen, entstehen sie hier auf `tmb` nach den
+Abläufen unten, und das Burg-Repo stellt `voidrpUiRepo`/`voidrpUiVersion` zurück auf den Fork.
 
 ## Wo was liegt
 
