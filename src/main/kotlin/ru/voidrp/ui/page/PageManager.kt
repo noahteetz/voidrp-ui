@@ -57,6 +57,15 @@ class PageManager(
      * Needs PacketEvents: a bar someone else owns is invisible to the server otherwise.
      */
     private val bars: ru.voidrp.ui.input.BossBarGuard = ru.voidrp.ui.input.BossBarGuard(),
+    /**
+     * Whether this player's client moves the pointer itself: the motion shader is in the
+     * pack, and the pack this client loaded is the one it is in.
+     */
+    private val clientMotion: (Player) -> Boolean = { false },
+    /** What each player has set for their own pointer; the `input` section for the rest. */
+    private val cursorPrefs: ru.voidrp.ui.input.CursorPrefs? = null,
+    /** Whether this player's client can draw a page in the world: the pack it loaded. */
+    private val worldPossible: (Player) -> Boolean = { false },
 ) : Listener, ru.voidrp.ui.api.VoidRpUi {
 
     private val sessions = java.util.concurrent.ConcurrentHashMap<UUID, PageSession>()
@@ -138,10 +147,36 @@ class PageManager(
      * The client reports its aim twenty times a second and that is the ceiling on *knowing*
      * where the pointer is, but not on drawing it: between two readings the pointer is
      * reckoned forward, and the more often that reckoning is sent the less of a step there
-     * is between one position and the next. Eighty-five is about one frame of a 144 Hz
-     * screen; past that the packets cost more than the smoothness is worth.
+     * is between one position and the next — in theory. In play, more was worse: the frames
+     * reach a 60 Hz screen at 85 a second, so one of its frames takes two of ours and the next
+     * takes none, and the pointer moves in uneven steps however smooth the reckoning is.
+     * Forty is two frames to every reading, each the same size, and on a 60 Hz screen a
+     * frame of ours is never lost. Changeable with a page open (`/vui debug fps`).
      */
-    val frameRate: Int = plugin.config.getInt("input.frame-rate", DEFAULT_FRAME_RATE).coerceIn(20, 144)
+    var frameRate: Int = plugin.config.getInt("input.frame-rate", DEFAULT_FRAME_RATE).coerceIn(MIN_FRAME_RATE, MAX_FRAME_RATE)
+        set(value) {
+            field = value.coerceIn(MIN_FRAME_RATE, MAX_FRAME_RATE)
+            schedule()
+        }
+
+    private var frameTask: java.util.concurrent.ScheduledFuture<*>? = null
+
+    /** (Re)starts the frame loop at [frameRate]. */
+    private fun schedule() {
+        // The loop itself always runs at LOOP_RATE: it reads the aim and, for a client that
+        // moves the pointer itself, sends only when the course changes, so polling often
+        // costs nothing and polling seldom made the pointer late. [frameRate] is how often
+        // a pointer sent frame by frame may go, and each session holds itself to it.
+        frameTask?.cancel(false)
+        frameTask = frames.scheduleAtFixedRate(
+            {
+                runCatching { sessions.values.forEach { it.frame() } }
+            },
+            0,
+            1_000_000L / LOOP_RATE,
+            java.util.concurrent.TimeUnit.MICROSECONDS,
+        )
+    }
 
     /**
      * How many gaps between readings the pointer is given to cover the distance one shows.
@@ -157,24 +192,24 @@ class PageManager(
      * one thing that takes it closer to the hand than a reading behind it. See
      * [ru.voidrp.ui.input.Pointer.prediction].
      */
+    /**
+     * How far a client's clock runs ahead of the server's when a packet lands, in ticks —
+     * what client motion needs to hand one packet over to the next without a jump. Tuned
+     * with `/vui debug clock` and `/vui debug offset`.
+     */
+    var clientClockOffset: Double = plugin.config.getDouble("input.client-clock-offset", 0.9).coerceIn(-3.0, 3.0)
+
     var prediction: Double = plugin.config
         .getDouble("input.prediction", ru.voidrp.ui.input.Pointer.PREDICTION)
         .coerceIn(ru.voidrp.ui.input.Pointer.PREDICTION_MIN, ru.voidrp.ui.input.Pointer.PREDICTION_MAX)
 
-    /** Starts drawing frames at about the rate a screen refreshes. */
+    /** Starts drawing frames. */
     fun start() {
         // Now, not in the constructor: by the time a plugin is enabled, the plugins it
         // asked to come first are enabled too.
         readsPackets = runCatching { aim.install() }.getOrDefault(false)
         ordersBars = runCatching { bars.install() }.getOrDefault(false)
-        frames.scheduleAtFixedRate(
-            {
-                runCatching { sessions.values.forEach { it.frame() } }
-            },
-            0,
-            (1000L / frameRate).coerceAtLeast(6L),
-            java.util.concurrent.TimeUnit.MILLISECONDS,
-        )
+        schedule()
     }
 
     fun shutdown() {
@@ -219,6 +254,21 @@ class PageManager(
         return open(player, ask)
     }
 
+    override fun cursorSettings(player: Player, then: Page?): Boolean {
+        val prefs = cursorPrefs ?: return false
+        val page = CursorPage(
+            prefs,
+            player.uniqueId,
+            serverSensitivity = { sensitivity },
+            serverOffset = { clientClockOffset },
+            motionPossible = { clientMotion(player) },
+            worldPossible = { worldPossible(player) },
+            done = { then?.let { open(player, it) } },
+            say = { key -> messages.text(key) },
+        ).also { it.isFollowed = then != null }
+        return open(player, page)
+    }
+
     override fun open(player: Player, page: Page): Boolean {
         if (!packReady(player)) {
             player.sendMessage(messages.get("pack.missing"))
@@ -236,7 +286,7 @@ class PageManager(
                 page,
                 renderer,
                 sounds,
-                { sensitivity },
+                { cursorPrefs?.of(player.uniqueId)?.sensitivity ?: sensitivity },
                 { smoothing },
                 { prediction },
                 { cursorBarOffset },
@@ -244,17 +294,12 @@ class PageManager(
                 aim,
                 { viewportOf(player) },
                 { key -> messages.text(key) },
-            ) { over ->
-                sessions.remove(over.player.uniqueId, over)
-                // A tick later, and only if no page took its place: going from one page to
-                // the next closes one session and opens another, and putting the bars back
-                // in between would flash them across the screen.
-                runCatching {
-                    plugin.server.scheduler.runTask(plugin, Runnable {
-                        if (over.player.isOnline && !isOpen(over.player)) bars.showOthers(over.player)
-                    })
-                }
-            }
+                { over -> forgetSession(over) },
+                { clientMotion(player) && cursorPrefs?.of(player.uniqueId)?.motion != false },
+                { cursorPrefs?.of(player.uniqueId)?.clockOffset ?: clientClockOffset },
+                { frameRate },
+                { worldPossible(player) && cursorPrefs?.of(player.uniqueId)?.world == true },
+            )
         // Opened before it is listed: the frame thread walks this list sixty times a second
         // and draws the pointer, and bars stack in the order they first appear. Listed
         // first, the pointer's bar could be created before the page's — and then the page
@@ -288,12 +333,45 @@ class PageManager(
         sessions.clear()
     }
 
+    /** A session over: off the list, and the other plugins' bars back a tick later. */
+    private fun forgetSession(over: PageSession) {
+        sessions.remove(over.player.uniqueId, over)
+        // A tick later, and only if no page took its place: going from one page to
+        // the next closes one session and opens another, and putting the bars back
+        // in between would flash them across the screen.
+        runCatching {
+            plugin.server.scheduler.runTask(plugin, Runnable {
+                if (over.player.isOnline && !isOpen(over.player)) bars.showOthers(over.player)
+            })
+        }
+    }
+
+    /**
+     * A page in the world stays where it was put, so the player stays too: they may look
+     * round it, not walk off from it.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    fun onMove(event: org.bukkit.event.player.PlayerMoveEvent) {
+        if (session(event.player)?.inWorld != true) return
+        val from = event.from
+        val to = event.to
+        if (from.x == to.x && from.y == to.y && from.z == to.z) return
+        event.setTo(from.clone().apply { yaw = to.yaw; pitch = to.pitch })
+    }
+
     /** Called every tick: the cursor follows the player's aim, so it has to keep up. */
     fun tick() {
         sessions.values.toList().forEach { session ->
             if (session.player.isOnline) session.tick() else close(session.player)
         }
     }
+
+    /** Starts a ten-second motion trace on this player's open page; false with none open. */
+    fun traceMotion(player: Player): Boolean = session(player)?.let { it.startTrace(); true } ?: false
+
+    /** Flips the clock ruler on this player's open page; null with no page open. */
+    fun toggleClockProbe(player: Player): Boolean? =
+        session(player)?.let { it.clockProbe = !it.clockProbe; it.clockProbe }
 
     // A closed session answers to nothing, whichever list it is still on.
     private fun session(player: Player): PageSession? = sessions[player.uniqueId]?.takeIf { !it.isClosed }
@@ -438,6 +516,11 @@ class PageManager(
         const val SETTLE_MS = 1500L
 
         /** How often the pointer is drawn when nothing says otherwise. */
-        const val DEFAULT_FRAME_RATE = 85
+        const val DEFAULT_FRAME_RATE = 40
+        const val MIN_FRAME_RATE = 10
+
+        /** How often the aim is read and the pointer considered, in frames a second. */
+        const val LOOP_RATE = 60
+        const val MAX_FRAME_RATE = 144
     }
 }

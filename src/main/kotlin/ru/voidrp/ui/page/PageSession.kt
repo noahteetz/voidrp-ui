@@ -80,7 +80,37 @@ class PageSession(
      * list.
      */
     private val forget: (PageSession) -> Unit = {},
+    /**
+     * Whether this client moves the pointer by itself between packets
+     * ([ru.voidrp.ui.input.MotionCodec]): a pack with the motion shader, loaded by a client
+     * new enough to run it. Otherwise every frame is sent, as before.
+     */
+    private val clientMotion: () -> Boolean = { false },
+    /**
+     * How far the client's clock runs ahead of ours when a packet lands, in ticks. Measured
+     * with `/vui debug clock`: 1.1 to 2 on a local client. Unaccounted for, every change of
+     * speed moved the pointer by that change times this, and the shader, thinking more time
+     * had gone than had, hit its limit and held the pointer until the next packet.
+     */
+    private val clockOffset: () -> Double = { 0.0 },
+    /** How many pointers a second may go when it is sent frame by frame. */
+    private val frameRate: () -> Int = { 60 },
+    /**
+     * Whether this page is drawn in the world rather than on the screen
+     * ([ru.voidrp.ui.render.WorldSurface]): the page stands in front of the player and the
+     * pointer is the middle of their view. Asked once, when the page opens.
+     */
+    private val worldMode: () -> Boolean = { false },
 ) {
+
+    /** The page in the world, when it is drawn there; null on the screen. */
+    private var world: ru.voidrp.ui.render.WorldSurface? = null
+
+    /** Whether this page is drawn in the world: the player is kept where they stand. */
+    val inWorld: Boolean get() = world != null
+
+    /** The eyes the world page was put in front of: the player does not move while it is up. */
+    private var worldEye: org.bukkit.util.Vector? = null
 
     /** The canvas this player's page is drawn on. */
     val viewport: ru.voidrp.ui.layout.Viewport get() = screen()
@@ -96,6 +126,61 @@ class PageSession(
         smoothing = smoothing(),
         prediction = prediction(),
     )
+
+    /** What the client is drawing, when it moves the pointer itself. */
+    private val timeline = ru.voidrp.ui.input.MotionTimeline()
+
+    /**
+     * The world's clock as of the last tick, and when that tick ran: between the two, the
+     * clock the client's shader reads, down to the part of a tick. Written on the server
+     * thread, read by the frames.
+     */
+    @Volatile private var worldTicks = 0L
+    @Volatile private var tickAt = 0L
+    @Volatile private var clockBase = 0.0
+
+    /**
+     * `/vui debug clock`: draws a ruler with a mark that sits as many ticks off its middle
+     * as this client's clock is off ours when a packet lands — the one number client motion
+     * depends on and nothing else can see. Sent every frame while it is on.
+     */
+    @Volatile var clockProbe = false
+
+    /** `/vui debug mtrace`: every reading and every plan for ten seconds, then a file. */
+    private var motionTrace: StringBuilder? = null
+    private var motionTraceUntil = 0L
+
+    fun startTrace() {
+        motionTrace = StringBuilder("kind,nanos,clock,x,y,tick,vx,vy,tx,ty\n")
+        motionTraceUntil = System.nanoTime() + 10_000_000_000L
+    }
+
+    private inline fun traceLine(line: () -> String) {
+        val out = motionTrace ?: return
+        out.append(line()).append('\n')
+        if (System.nanoTime() > motionTraceUntil) {
+            motionTrace = null
+            runCatching {
+                val file = java.io.File(plugin.dataFolder, "motion-trace-${player.name}.csv")
+                file.writeText(out.toString())
+                plugin.logger.info("Motion trace for ${player.name} written: ${file.name}")
+            }
+        }
+    }
+
+
+    /**
+     * The clock the client's shader will read when what is sent now lands: the world's clock
+     * as of the last tick, the part of a tick gone since, and how far ahead the client's own
+     * runs ([clockOffset]). Null before the first tick.
+     */
+    private fun clock(now: Long): Double? {
+        if (tickAt == 0L) return null
+        return clockBase + now / NANOS_PER_TICK + clockOffset()
+    }
+
+    /** Whether the pointer goes as a place and a speed right now. */
+    private fun moves(now: Long): Boolean = clientMotion() && clock(now) != null
 
     /** The round trip to this player, refreshed now and then rather than every frame. */
     private var roundTrip = 0
@@ -188,6 +273,10 @@ class PageSession(
         // A bar left behind by an earlier life of the plugin would push this page down a
         // line, and the pointer with it.
         runCatching { renderer.clearOrphans(player) }
+        if (worldMode()) {
+            world = runCatching { ru.voidrp.ui.render.WorldSurface(plugin, player, viewport.width) }.getOrNull()
+            worldEye = player.eyeLocation.toVector()
+        }
         page.session = this
         page.onOpen()
         sounds.open(player)
@@ -202,6 +291,7 @@ class PageSession(
         // one the last page was drawn on, if the player has just said what shape their
         // screen is.
         pointer.place((viewport.width / 2).toDouble(), (Shaders.CANVAS_HEIGHT / 2).toDouble())
+        timeline.place(pointer.targetX, pointer.targetY)
         render()
     }
 
@@ -237,6 +327,16 @@ class PageSession(
      */
     fun tick() {
         if (closed) return
+        val ticks = runCatching { player.world.gameTime }.getOrDefault(worldTicks)
+        val at = System.nanoTime()
+        // The world's clock as a line through the ticks rather than the last tick itself:
+        // this runs wherever in the tick the scheduler gets to it, a few milliseconds early
+        // or late depending on the world, and every plan read that wobble as the clock's.
+        val base = ticks - at / NANOS_PER_TICK
+        clockBase = if (tickAt == 0L || Math.abs(base - clockBase) > CLOCK_RESYNC) base
+            else clockBase + (base - clockBase) * CLOCK_EASING
+        worldTicks = ticks
+        tickAt = at
         // The aim is read by the frames, sixty times a second, and reading it here as well
         // would eat the very readings the tracker is waiting for. This tick only asks what
         // the pointer is over now, because answering that means drawing the page again and
@@ -350,16 +450,141 @@ class PageSession(
         val before = cursorX to cursorY
         val wasOver = under
         val now = System.nanoTime()
-        readAim(now)
+        if (world != null) {
+            frameInWorld()
+            return
+        }
+        val sampled = readAim(now)
         pointer.smoothing = smoothing()
         pointer.prediction = prediction()
         pointer.frame(now, ping(), viewport.width, Shaders.CANVAS_HEIGHT)
         record(now)
         under = regions.lastOrNull { it.contains(cursorX, cursorY) }
         if (under?.id != null && under?.id != wasOver?.id) sounds.hover(player)
+        if (moves(now)) {
+            frameMoving(now, sampled, wasOver?.id != under?.id)
+            return
+        }
         if (before == cursorX to cursorY && wasOver?.id == under?.id) return
+        // The loop runs faster than a pointer sent frame by frame may go: a frame skipped
+        // here is caught up by the next one allowed, which draws wherever the pointer is then.
+        if (now - drawnAt < 1_000_000_000L / frameRate().coerceAtLeast(1) && wasOver?.id == under?.id) return
+        drawnAt = now
         draw()
     }
+
+    /** When a pointer sent frame by frame last went. */
+    private var drawnAt = 0L
+
+    /**
+     * A frame for a page in the world: where the middle of the view meets the page is the
+     * pointer, read straight off the latest look — nothing to smooth, the client shows it.
+     */
+    private fun frameInWorld() {
+        val surface = world ?: return
+        val eye = worldEye ?: return
+        val wire = aim.look(player.uniqueId)
+        val yaw = wire?.get(0) ?: runCatching { player.location.yaw }.getOrNull() ?: return
+        val pitch = wire?.get(1) ?: runCatching { player.location.pitch }.getOrNull() ?: return
+        val yawRad = Math.toRadians(yaw.toDouble())
+        val pitchRad = Math.toRadians(pitch.toDouble())
+        val direction = org.bukkit.util.Vector(
+            -Math.sin(yawRad) * Math.cos(pitchRad),
+            -Math.sin(pitchRad),
+            Math.cos(yawRad) * Math.cos(pitchRad),
+        )
+        val (x, y) = surface.aim(eye, direction) ?: return
+        val wasOver = under
+        pointer.place(x, y)
+        under = regions.lastOrNull { it.contains(cursorX, cursorY) }
+        if (under?.id != null && under?.id != wasOver?.id) sounds.hover(player)
+        if (under?.id != wasOver?.id || tooltip != null) synchronized(drawing) { drawHover() }
+    }
+
+    /**
+     * A frame for a client that moves the pointer itself: nothing is sent unless the course
+     * changes — a new reading of the aim, the pointer settling, or a tick gone by while it is
+     * still on its way. The screen is kept moving by the shader in between.
+     */
+    private fun frameMoving(now: Long, sampled: Boolean, overChanged: Boolean) {
+        val clock = clock(now) ?: return
+        val x = pointer.targetX
+        val y = pointer.targetY
+        if (sampled) traceLine { "read,$now,$clock,$x,$y" }
+        val lift = cursorLift()
+        val asSent: (Double) -> Int = { h ->
+            ru.voidrp.ui.input.MotionCodec.yOf(ru.voidrp.ui.input.MotionCodec.yStep(Math.round(h).toInt() - lift)) + lift
+        }
+        when {
+            // A new reading: one more segment on the schedule.
+            sampled -> {
+                synchronized(drawing) { timeline.reading(x, y, clock, asSent) }
+                draw(replan = true)
+            }
+            // Played out: at rest where it ended, or one more segment if that fell short.
+            timeline.settled(clock) -> {
+                synchronized(drawing) {
+                    if (Math.hypot(timeline.endX - x, timeline.endY - y) > SETTLE) timeline.reading(x, y, clock, asSent)
+                    else timeline.rest()
+                }
+                draw(replan = true)
+            }
+            // The ruler goes every loop; the pointer with it, as it stands.
+            clockProbe -> draw()
+            overChanged -> synchronized(drawing) { drawHover() }
+        }
+    }
+
+    /**
+     * The clock ruler: ticks −3…3, fifty units apart, and a pointer sent moving at fifty
+     * units a tick from the middle as of our clock right now. On the client it lands at the
+     * middle plus fifty times however far the client's clock is from ours.
+     */
+    private fun probe(clock: Double, lift: Int): List<Node> {
+        val x0 = viewport.width / 2
+        val y0 = 140
+        val out = mutableListOf<Node>(Rect(x0 - 190, y0 - 34 - lift, 380, 92, Paint(0x101018)))
+        for (k in -3..3) {
+            out += Rect(x0 + k * PROBE_SPEED - 1, y0 + 20 - lift, 2, 14, Paint(if (k == 0) 0xFFD166 else 0xFFFFFF))
+            out += ru.voidrp.ui.render.Label(x0 + k * PROBE_SPEED - 5, y0 + 38 - lift, "$k", 14, 0xFFFFFF)
+        }
+        out += ru.voidrp.ui.render.Label(x0 - 180, y0 - 30 - lift, "clock  ping ${ping()} ms", 14, 0xAAAAFF)
+        val tick = Math.floor(clock).toLong()
+        // Half a loop back, so the mark, which runs on until the next one lands, swings
+        // either side of the clock's offset rather than always to the right of it.
+        val halfLoop = 0.5 * TICKS_PER_SECOND / PageManager.LOOP_RATE
+        // A glyph is drawn only in its own tick, so the mark is three of them, the tick
+        // before, this one and the next, each placed to continue the one before it.
+        for (k in -1L..1L) {
+            val px = Math.round(x0 - PROBE_SPEED * (clock - (tick + k) + halfLoop)).toInt()
+            out += Sprite(
+                px, y0 - lift, Glyphs.cursor(), Glyphs.cursorAdvance(),
+                motion = ru.voidrp.ui.render.SpriteMotion(tick + k, ru.voidrp.ui.input.MotionCodec.code(PROBE_SPEED.toDouble()), 0),
+            )
+        }
+        return out
+    }
+
+    private var probeSince = 0L
+    private var probeSent = 0
+    private var probeWorst = 0L
+
+    /** While the ruler is on: how many pointers went out a second, and the slowest one. */
+    private fun countProbe(started: Long) {
+        val done = System.nanoTime()
+        probeSent++
+        probeWorst = maxOf(probeWorst, done - started)
+        if (probeSince == 0L) probeSince = done
+        if (done - probeSince >= 2_000_000_000L) {
+            plugin.logger.info(
+                "clock ruler ${player.name}: ${probeSent / 2.0} pointers/s, slowest ${probeWorst / 1_000_000.0} ms",
+            )
+            probeSince = done
+            probeSent = 0
+            probeWorst = 0
+        }
+    }
+
 
     /**
      * What the cursor is over right now, found at frame rate.
@@ -610,6 +835,12 @@ class PageSession(
      * and the rest of the page, the heaviest part of it, stays where it is on the screen.
      */
     private fun send(page: List<Node>, cuts: List<Int>, centre: Int) {
+        world?.let {
+            // In the world the page is one display: no lines to stack, so no lift either.
+            it.page(GlyphEncoder.encode(page, centre))
+            sent++
+            return
+        }
         // Panels taken apart first, so that even a page that is one big panel can be halved,
         // and the cuts moved to where their nodes' shapes begin.
         val nodes = ArrayList<Node>()
@@ -665,9 +896,40 @@ class PageSession(
     private val drawing = Any()
 
     /** Sends the pointer, and what it is over when that has changed. */
-    private fun draw() = synchronized(drawing) {
+    /**
+     * Sends the pointer. A pointer the client moves is planned again only when [replan]:
+     * everything else that sends it — the page redrawn, the hover, the ruler — sends the
+     * plan it has. Planned again sixty times a second for the ruler, it shook even at rest,
+     * every plan a hair off the one before by however far the client's clock is off.
+     */
+    private fun draw(replan: Boolean = false) = synchronized(drawing) {
         drawHover()
+        // In the world the pointer is the middle of the view: nothing to draw for it.
+        if (world != null) return@synchronized
         val lift = cursorLift()
+        val now = System.nanoTime()
+        val clock = clock(now)
+        if (clientMotion() && clock != null) {
+            if (replan && !timeline.resting) {
+                traceLine { "plan,$now,$clock,${timeline.glyphs().joinToString(";") { "${it.x}/${it.y}/${it.tick}/${it.vx}/${it.vy}" }},${pointer.targetX},${pointer.targetY}" }
+            }
+            // At rest the ordinary way, to the unit; moving, the schedule's glyphs, each
+            // drawn by the client only in its own tick.
+            val pointerNodes: List<Node> = if (timeline.resting) {
+                cursor(Math.round(timeline.endX).toInt(), Math.round(timeline.endY).toInt() - lift)
+            } else {
+                timeline.glyphs().map {
+                    Sprite(
+                        it.x, it.y - lift, Glyphs.cursor(), Glyphs.cursorAdvance(),
+                        motion = ru.voidrp.ui.render.SpriteMotion(it.tick, it.vx, it.vy),
+                    )
+                }
+            }
+            val nodes = if (clockProbe) pointerNodes + probe(clock, lift) else pointerNodes
+            renderer.cursor(player, GlyphEncoder.encode(nodes, viewport.width / 2))
+            if (clockProbe) countProbe(now)
+            return@synchronized
+        }
         renderer.cursor(player, GlyphEncoder.encode(cursor(cursorX, cursorY - lift), viewport.width / 2))
     }
 
@@ -699,7 +961,9 @@ class PageSession(
         val nodes = mutableListOf<Node>()
         region?.let { halo(it, nodes) }
         view?.let { tooltipNodes(it, nodes) }
-        renderer.hover(player, GlyphEncoder.encode(nodes, viewport.width / 2, lift))
+        val surface = world
+        if (surface != null) surface.hover(GlyphEncoder.encode(nodes, viewport.width / 2))
+        else renderer.hover(player, GlyphEncoder.encode(nodes, viewport.width / 2, lift))
         hoverSends++
     }
 
@@ -731,6 +995,8 @@ class PageSession(
         forget(this)
         sounds.close(player)
         renderer.clear(player)
+        world?.remove()
+        world = null
         page.onClose()
         page.session = null
         stack.forEach { it.session = null }
@@ -772,6 +1038,25 @@ class PageSession(
         }
 
         /** The pointer: one glyph, drawn with its own colours. */
+        private const val TICKS_PER_SECOND = 20.0
+
+        /** A tick of the world's clock, in nanoseconds. */
+        private const val NANOS_PER_TICK = 50_000_000.0
+
+        /** How much of each tick's reading of the clock goes into the line through them. */
+        private const val CLOCK_EASING = 0.05
+
+        /** Ticks the clock may jump by (a lag spike, a /time) before the line starts over. */
+        private const val CLOCK_RESYNC = 3.0
+
+        /** Closer than this to where it belongs, and a pointer that has played out rests. */
+        private const val SETTLE = 1.5
+
+        /** The clock ruler's scale: units a tick, and a speed the codec carries exactly. */
+        private const val PROBE_SPEED = 50
+
+
+
         fun cursor(x: Int, y: Int): List<Node> =
             listOf(Sprite(x, y, Glyphs.cursor(), Glyphs.cursorAdvance()))
     }

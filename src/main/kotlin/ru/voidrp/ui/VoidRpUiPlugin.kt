@@ -49,6 +49,7 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
      * window instead of being squashed into it.
      */
     val screens = ru.voidrp.ui.layout.Screens(File(dataFolder, "screens.yml")) { serverScreen }
+    val cursorPrefs = ru.voidrp.ui.input.CursorPrefs(File(dataFolder, "cursor.yml"))
 
     /** The screen shape assumed for a player who has not said what theirs is. */
     private var serverScreen = ru.voidrp.ui.layout.Viewport.DEFAULT
@@ -63,6 +64,10 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
         screens,
         { config.getBoolean("display.ask-screen", true) },
         bars,
+        { player -> ru.voidrp.ui.pack.Shaders.motion && clientMotion && usesModernPack(player) },
+        cursorPrefs,
+        // Experimental: for the staff to try, not offered to players yet.
+        { player -> usesModernPack(player) && player.hasPermission("voidrp.ui.world") },
     )
     private val sweeps = mutableMapOf<UUID, BukkitTask>()
     private lateinit var packFile: File
@@ -153,6 +158,7 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
             ?.let { ru.voidrp.ui.layout.Viewport.parse(it) }
             ?: ru.voidrp.ui.layout.Viewport.DEFAULT
         screens.load()
+        cursorPrefs.load()
         logger.info(
             "Assumed screen: ${ru.voidrp.ui.layout.Viewport.name(serverScreen)} " +
                 "(${serverScreen.width}×${serverScreen.height}). A player sets their own with /vui screen."
@@ -160,6 +166,7 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
 
         // Baked into the shader, so it is decided before the pack is built.
         ru.voidrp.ui.pack.Shaders.particles = config.getBoolean("effects.particles", true)
+        ru.voidrp.ui.pack.Shaders.motion = config.getBoolean("input.client-motion", true)
 
         // The server's own pack files — retextured screens, say — travel in the same archive.
         val extra = File(dataFolder, "pack").apply { mkdirs() }
@@ -306,6 +313,18 @@ class VoidRpUiPlugin : JavaPlugin(), Listener {
      * A server that applies the pack some other way — through server.properties, or a
      * merged pack of its own — can turn the check off and take responsibility for it.
      */
+    /**
+     * Whether pointers go as a place and a speed where the client can take them. The pack
+     * decides whether it can ([ru.voidrp.ui.pack.Shaders.motion]); this, whether it does —
+     * `/vui debug motion` flips it live, to compare the two by hand.
+     */
+    @Volatile var clientMotion = true
+
+    /** Whether this player was sent, and loaded, the pack for 26.2 and newer. */
+    fun usesModernPack(player: Player): Boolean =
+        packHash.isNotEmpty() && sentHash[player.uniqueId] == packHash && packHash != legacyHash &&
+            packStatus[player.uniqueId] == PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED
+
     fun packReady(player: Player): Boolean {
         if (!config.getBoolean("pack.require-accepted", true)) return true
         val current = sentHash[player.uniqueId]

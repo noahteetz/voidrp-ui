@@ -117,6 +117,85 @@ class DebugCommand(private val plugin: VoidRpUiPlugin) {
                 )
             }
 
+            // The allowance for the client's clock running ahead: set so the ruler reads 0.
+            "offset" -> {
+                args.getOrNull(1)?.replace(',', '.')?.toDoubleOrNull()?.let {
+                    plugin.pages.clientClockOffset = it.coerceIn(-3.0, 3.0)
+                    plugin.config.set("input.client-clock-offset", plugin.pages.clientClockOffset)
+                    plugin.saveConfig()
+                }
+                sender.sendMessage(
+                    Component.text(
+                        "Client clock offset ${plugin.pages.clientClockOffset} ticks (saved). With /vui debug clock on, " +
+                            "raise it by where the mark sits until the mark sits on 0.",
+                        NamedTextColor.AQUA,
+                    )
+                )
+            }
+
+            // Ten seconds of readings and plans to a file, for a player (by name from the console).
+            "mtrace" -> {
+                val target = args.getOrNull(1)?.let { org.bukkit.Bukkit.getPlayerExact(it) } ?: (sender as? org.bukkit.entity.Player)
+                val ok = target != null && plugin.pages.traceMotion(target)
+                sender.sendMessage(
+                    Component.text(
+                        if (ok) "Tracing ${target!!.name}'s pointer for 10 s → motion-trace-${target.name}.csv" else "No open page to trace.",
+                        NamedTextColor.AQUA,
+                    )
+                )
+            }
+
+            // How far this client's clock is from ours: the one unknown of client motion.
+            "clock" -> {
+                val player = sender as? org.bukkit.entity.Player ?: return
+                val on = plugin.pages.toggleClockProbe(player)
+                sender.sendMessage(
+                    Component.text(
+                        when (on) {
+                            null -> "Open a page first."
+                            true -> "Clock ruler on: the pointer at the top sits (clock offset) ticks from the yellow 0. Screenshot it a few times."
+                            false -> "Clock ruler off."
+                        },
+                        NamedTextColor.AQUA,
+                    )
+                )
+            }
+
+            // The pointer moved by the client, or sent frame by frame: flipped live to compare.
+            "motion" -> {
+                when (args.getOrNull(1)?.lowercase()) {
+                    "on" -> plugin.clientMotion = true
+                    "off" -> plugin.clientMotion = false
+                    null -> plugin.clientMotion = !plugin.clientMotion
+                }
+                val built = ru.voidrp.ui.pack.Shaders.motion
+                sender.sendMessage(
+                    Component.text(
+                        if (!built) "The pack was built without client motion (input.client-motion: false)."
+                        else if (plugin.clientMotion) "Pointer: moved by the client between packets."
+                        else "Pointer: sent frame by frame at ${plugin.pages.frameRate} a second, as before.",
+                        NamedTextColor.AQUA,
+                    )
+                )
+            }
+
+            // How often the pointer is drawn. Saved, since it is a server-wide choice.
+            "fps" -> {
+                args.getOrNull(1)?.toIntOrNull()?.let {
+                    plugin.pages.frameRate = it
+                    plugin.config.set("input.frame-rate", plugin.pages.frameRate)
+                    plugin.saveConfig()
+                }
+                sender.sendMessage(
+                    Component.text(
+                        "Pointer frames: ${plugin.pages.frameRate} a second (saved). Readings of the aim come " +
+                            "twenty a second, so 40 or 60 gives every reading the same number of frames; " +
+                            "above your screen's refresh rate frames are dropped and the steps come out uneven.",
+                        NamedTextColor.AQUA,
+                    )
+                )
+            }
+
             // How close to the hand the pointer runs, against how far it overshoots a stop.
             "predict" -> {
                 args.getOrNull(1)?.toDoubleOrNull()?.let {
@@ -248,7 +327,7 @@ class DebugCommand(private val plugin: VoidRpUiPlugin) {
     }
 
     fun complete(args: List<String>): List<String> = if (args.size <= 1) {
-        listOf("bench", "stats", "clicks", "sens", "smooth", "predict", "cursor", "trace", "shape", "text", "shot", "sweep", "clear")
+        listOf("bench", "stats", "clicks", "sens", "smooth", "predict", "fps", "motion", "clock", "offset", "mtrace", "cursor", "trace", "shape", "text", "shot", "sweep", "clear")
             .filter { it.startsWith(args.firstOrNull().orEmpty(), ignoreCase = true) }
     } else {
         emptyList()

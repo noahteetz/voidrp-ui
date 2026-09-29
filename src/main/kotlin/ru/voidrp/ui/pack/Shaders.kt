@@ -74,6 +74,27 @@ object Shaders {
     const val SHIFT = 64
 
     /**
+     * The four markers of a glyph the client moves by itself: the pointer, sent as a place
+     * and a speed ([ru.voidrp.ui.input.MotionCodec]). Four, because which one it is carries
+     * two more bits of data. 6 to 9 for the reason 0xB was chosen: no named colour has any
+     * of them as its red.
+     */
+    const val MARKER_MOTION_FIRST = 0x6
+    const val MARKER_MOTION_LAST = 0x9
+
+    /**
+     * The scale of a text display that carries a page in the world: a text pixel there is
+     * 1/40 of a block, times this, so a 1024-unit-tall page stands about 1.8 blocks high.
+     */
+    const val WORLD_DISPLAY_SCALE = 0.07f
+
+    /**
+     * Whether the pack moves the pointer on the client ([MARKER_MOTION_FIRST]). Like the
+     * drifting specks it reads the client's time of day, so it brings in the same import.
+     */
+    var motion = false
+
+    /**
      * Whether the pack carries the drifting branch at all.
      *
      * It costs one import — the client's own globals, where the time of day lives — and a
@@ -116,17 +137,40 @@ object Shaders {
         // y (10) followed by the fill colour (10, RGB 3-4-3).
         // (Nothing here may be named "packed" — a reserved word in GLSL that makes strict
         // drivers reject the whole shader while lenient compilers let it pass.)
-        bool voidrp_decode(vec4 color, out float canvasY, out vec3 fill, out bool drifts) {
+        // Canvas units a tick, one for each of the thirty-two speed codes (MotionCodec.SPEEDS).
+        const float VOIDRP_SPEEDS[32] = float[32](${ru.voidrp.ui.input.MotionCodec.SPEEDS.joinToString(", ") { "%.2f".format(java.util.Locale.ROOT, it) }});
+
+        float voidrp_speed(int code) {
+            float magnitude = VOIDRP_SPEEDS[code & 31];
+            return (code & 32) != 0 ? -magnitude : magnitude;
+        }
+
+        bool voidrp_decode(vec4 color, out float canvasY, out vec3 fill, out bool drifts, out vec3 motion) {
             int red = int(floor(color.r * 255.0 + 0.5));
             int mark = red >> 4;
+            int bits = ((red & 15) << 16)
+                     | (int(floor(color.g * 255.0 + 0.5)) << 8)
+                     |  int(floor(color.b * 255.0 + 0.5));
+            motion = vec3(-1.0, 0.0, 0.0);
+            drifts = false;
+            // The pointer: a place at a tick, and a speed each way (MotionCodec.data). The
+            // marker is two bits of it; the colour is the rest, so the pointer is white.
+            if (mark >= ${MARKER_MOTION_FIRST} && mark <= ${MARKER_MOTION_LAST}) {
+                int data = ((mark - ${MARKER_MOTION_FIRST}) << 20) | bits;
+                canvasY = float((data >> 14) & 255) * ${ru.voidrp.ui.input.MotionCodec.Y_STEP}.0 - ${ru.voidrp.ui.input.MotionCodec.Y_SHIFT}.0;
+                fill = vec3(1.0);
+                int codeX = (data >> 6) & 63;
+                int codeY = data & 63;
+                // Minus nothing both ways is the hold at the end of a schedule.
+                bool holds = codeX == ${ru.voidrp.ui.input.MotionCodec.HOLD} && codeY == ${ru.voidrp.ui.input.MotionCodec.HOLD};
+                motion = vec3(float((data >> 12) & 3), holds ? -9999.0 : voidrp_speed(codeX), holds ? -9999.0 : voidrp_speed(codeY));
+                return true;
+            }
             if (mark < ${MARKER} || mark > ${MARKER_DRIFT_SHIFTED}) {
                 return false;
             }
             drifts = mark == ${MARKER_DRIFT} || mark == ${MARKER_DRIFT_SHIFTED};
             bool shifted = mark >= ${MARKER_SHIFTED};
-            int bits = ((red & 15) << 16)
-                     | (int(floor(color.g * 255.0 + 0.5)) << 8)
-                     |  int(floor(color.b * 255.0 + 0.5));
             int qy = (bits >> ${COLOUR_BITS}) & ${Y_MAX};
             int c = bits & ${(1 shl COLOUR_BITS) - 1};
             canvasY = float(qy) - (shifted ? ${SHIFT}.0 : 0.0);
@@ -174,11 +218,32 @@ object Shaders {
             return vec2(x, y);
         }
 
-        vec4 voidrp_place(float canvasY, vec4 original, bool drifts) {
+        vec4 voidrp_place(float canvasY, vec4 original, bool drifts, vec3 motion) {
             vec2 ndc = original.xy / original.w;
             float penX = ndc.x / ProjMat[0][0];
             float fromTop = (1.0 - ndc.y) / -ProjMat[1][1];
             vec2 canvas = vec2(penX, canvasY + fromTop - ${LINE_TOP}.0);
+        #ifdef VOIDRP_MOTION
+            if (motion.x >= 0.0) {
+                // A pointer played as a schedule (MotionTimeline): this glyph is one tick of
+                // it, or the hold at its end from the end of that tick onwards, and is
+                // drawn only then — whichever glyph's time it is, is the pointer. How far the
+                // clock is past the tick travels modulo ${ru.voidrp.ui.input.MotionCodec.TICK_WRAP};
+                // past WRAP_AT it is a tick still to come.
+                float elapsed = mod(GameTime * 24000.0 - motion.x, ${ru.voidrp.ui.input.MotionCodec.TICK_WRAP}.0);
+                if (elapsed >= ${ru.voidrp.ui.input.MotionTimeline.WRAP_AT}) {
+                    elapsed -= ${ru.voidrp.ui.input.MotionCodec.TICK_WRAP}.0;
+                }
+                // A segment shows in its own tick; a hold from the end of it on.
+                bool hold = motion.y < -9000.0;
+                if (hold ? elapsed < 1.0 : (elapsed < 0.0 || elapsed >= 1.0)) {
+                    return vec4(-4.0 * original.w, -4.0 * original.w, original.z, original.w);
+                }
+                if (!hold) {
+                    canvas += motion.yz * elapsed;
+                }
+            }
+        #endif
         #ifdef VOIDRP_PARTICLES
             if (drifts) {
                 // Ticks since the world began, near enough: GameTime runs 0…1 over twenty
@@ -244,7 +309,11 @@ object Shaders {
         else source.replaceFirst("#version 330", "#version 330\n#define VOIDRP_PARTICLES 1")
             .replaceFirst("#version 150", "#version 150\n#define VOIDRP_PARTICLES 1")
 
-    val TEXT_VSH_MODERN: String get() = withParticles(MODERN_TEMPLATE)
+    /** Only the modern shader: the older one has no time to read that is known to work. */
+    private fun withMotion(source: String): String =
+        if (!motion) source else source.replaceFirst("#version 330", "#version 330\n#define VOIDRP_MOTION 1")
+
+    val TEXT_VSH_MODERN: String get() = withMotion(withParticles(MODERN_TEMPLATE))
 
     /** 26.2 and newer: a single `text.vsh` with variants behind #define. */
     private val MODERN_TEMPLATE = """
@@ -257,7 +326,7 @@ object Shaders {
 
         #moj_import <minecraft:dynamictransforms.glsl>
         #moj_import <minecraft:projection.glsl>
-        #ifdef VOIDRP_PARTICLES
+        #if defined(VOIDRP_PARTICLES) || defined(VOIDRP_MOTION)
         #moj_import <minecraft:globals.glsl>
         #endif
 
@@ -289,9 +358,24 @@ object Shaders {
             float canvasY;
             vec3 fill;
             bool drifts;
+            vec3 motion;
             voidrpShape = 0.0;
-            if (voidrp_decode(Color, canvasY, fill, drifts)) {
-                gl_Position = voidrp_place(canvasY, gl_Position, drifts);
+            if (voidrp_decode(Color, canvasY, fill, drifts, motion)) {
+        #if defined(IS_GUI)
+                gl_Position = voidrp_place(canvasY, gl_Position, drifts, motion);
+        #else
+                // A page on a text display in the world: the client has already laid the
+                // line out across the display, so x is right; the height carried in the
+                // colour goes down the world's vertical in the display's scale — the page
+                // stands upright, facing the player.
+                // Every glyph lies in the one plane, and in the world that is a contest for
+                // the depth buffer: text lost to the panel under it. Each vertex is drawn a
+                // hair nearer than the one before, in the order the page paints them, so the
+                // later wins as it does on the screen.
+                vec3 placed = Position - vec3(0.0, canvasY * ${"%.6f".format(java.util.Locale.ROOT, 0.025 * WORLD_DISPLAY_SCALE)}, 0.0);
+                placed *= 1.0 - float(gl_VertexID) * 0.0000015;
+                gl_Position = ProjMat * ModelViewMat * vec4(placed, 1.0);
+        #endif
                 tint = vec4(fill, 1.0);
                 voidrpShape = 1.0;
             }
@@ -345,9 +429,10 @@ object Shaders {
             float canvasY;
             vec3 fill;
             bool drifts;
+            vec3 motion;
             voidrpShape = 0.0;
-            if (voidrp_decode(Color, canvasY, fill, drifts)) {
-                gl_Position = voidrp_place(canvasY, gl_Position, drifts);
+            if (voidrp_decode(Color, canvasY, fill, drifts, motion)) {
+                gl_Position = voidrp_place(canvasY, gl_Position, drifts, motion);
                 tint = vec4(fill, 1.0);
                 voidrpShape = 1.0;
             }

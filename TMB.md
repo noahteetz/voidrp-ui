@@ -10,32 +10,21 @@ Neuerungen des Originals ziehen wir bei Bedarf nach.
 
 ## Warum ein Fork
 
-VoidRP UI legt die Schrift fest im eigenen Jar fest und bietet keine Einstellung dafür:
+VoidRP UI legte die Schrift fest im eigenen Jar fest (nur Inter, keine Umlaute). Der Fork
+hat das behoben: Latin-1 in den Schriftbögen, eigene Schrift über `theme.yml`, Item-Icons
+in Größe 48 und eigene Pack-Dateien aus `plugins/VoidRpUI/pack/`.
 
-- **Nur Inter.** Die Burg soll wie ein Minecraft-Inventar aussehen, und dafür braucht es
-  eine Pixelschrift.
-- **Keine Umlaute.** Der Zeichensatz in `pack/TextFonts.kt` kannte ASCII und Kyrillisch,
-  aber kein ä, ö, ü oder ß. Unbekannte Zeichen überspringt `render/Element.kt`
-  stillschweigend, aus „Händler“ wurde im Spiel „Hndler“.
-
-## Was der Fork anders macht
-
-| Änderung | Wo |
-| --- | --- |
-| Latin-1 (ä ö ü ß é …), „ “ ‚ ‘ und € in den Schriftbögen; Zeichen, die eine Schrift nicht kennt, landen nicht als Kästchen im Bogen | `pack/TextFonts.kt` (`CHARSET`, `bake`) |
-| Eigene Schrift über den `font`-Abschnitt in `theme.yml`: TTF-Dateien aus `plugins/VoidRpUI/fonts/`, `pixel: true` ohne Kantenglättung, eigene Größen | `pack/TextFonts.kt` (`Face`), `VoidRpUiPlugin.onEnable`, `docs/theming.md` |
-| Item-Icons auch in Größe 48 (dreifach, passend zu einem Pixelraster von 3 Einheiten); vorher nur 16 und 32, ein 48er-Icon kam als 32er oben links im Feld an | `pack/Icons.kt` (`SIZES`) |
-| Eigene Pack-Dateien aus `plugins/VoidRpUI/pack/` (etwa neu texturierte Vanilla-Fenster) kommen unverändert mit ins Ressourcenpaket; Pfade, die VoidRP selbst schreibt, bleiben VoidRPs und werden im Log genannt | `pack/PackBuilder.kt` (`extra`), `VoidRpUiPlugin.onEnable` |
-
-Tests dazu: `PenAccountingTest` (Umlaute in jeder Größe, Icons in jeder Größe), `FaceTest`
-(Schrift, Pixelmodus, Einstellung), `PackExtraTest` (eigene Pack-Dateien).
+**Seit 0.3.19 steckt all das im Original** (Changelog 0.3.19, „From the fork by Noah
+Teetz“). `tmb` weicht derzeit nur um diese Datei und die Versionsnummer vom Original ab.
+Der Fork bleibt trotzdem die Quelle für das Burg-Plugin, damit künftige eigene Änderungen
+wieder hier entstehen können, ohne auf ein Release des Originals zu warten.
 
 ## Wo was liegt
 
 | Was | Wo |
 | --- | --- |
-| Dieser Fork, lokal | `C:\Dev\voidrp-ui` — neben dem Burg-Repo, kein Unterordner |
-| Burg-Plugin, lokal | `C:\Dev\TMB-Castle-Event` |
+| Dieser Fork, lokal | `voidrp-ui/` — neben dem Burg-Repo, kein Unterordner |
+| Burg-Plugin, lokal | `TMB-Castle-Event/` |
 | Remote `origin` | `github.com/noahteetz/voidrp-ui` (unser Fork) |
 | Remote `upstream` | `github.com/VOIDRP-MINECRAFT/voidrp-ui` (nur lesen, Push gesperrt) |
 
@@ -75,8 +64,8 @@ git checkout tmb && git merge main
 **Neue Version für das Burg-Plugin**
 
 1. In `build.gradle.kts` die Version hochzählen: `<Original-Version>-tmb.<n>`, etwa
-   `0.3.17-tmb.2`.
-2. Committen, Tag `v0.3.17-tmb.2` auf `tmb` setzen, beides pushen.
+   `0.3.19-tmb.2`.
+2. Committen, Tag `v0.3.19-tmb.2` auf `tmb` setzen, beides pushen.
 3. Der Workflow `.github/workflows/release.yml` baut das Jar und hängt es an das
    GitHub-Release. JitPack baut die Abhängigkeit beim ersten Abruf von selbst.
 4. Im Burg-Repo `voidrpUiVersion` in `gradle.properties` auf die neue Version setzen.
@@ -84,7 +73,7 @@ git checkout tmb && git merge main
 **Ausprobieren ohne Tag**
 
 Im Burg-Repo baut `-PvoidrpLokal` gegen diesen Klon: Tests, `uiVorschau` und
-`runServer` nutzen dann den aktuellen Stand von `C:\Dev\voidrp-ui` — `runServer` mit dem
+`runServer` nutzen dann den aktuellen Stand von `../voidrp-ui` — `runServer` mit dem
 hier frisch gebauten `build/libs/*-all.jar`.
 
 ## Bauen und prüfen

@@ -132,13 +132,31 @@ input:
   #         ordinary pace and 38 on a fast flick, and settles back within 75 ms
   #   0.75  21 ms behind; 20 to 56 units past a stop, which starts to read as a bounce
   prediction: 0.5
-  # How often the pointer is drawn, in frames a second.
+  # How often a pointer sent frame by frame may go, in frames a second (the aim is always
+  # read 60 times a second; a client that moves the pointer itself is sent only changes).
   #
   # The client reports where it is looking twenty times a second, and that is the ceiling on
   # knowing where the pointer is — not on drawing it. Between two readings the pointer is
   # reckoned forward, and the more often that is sent the smaller the step from one position
-  # to the next. Each frame is one small packet per player with a page open.
-  frame-rate: 85
+  # to the next — in theory. In play more was worse: at 85 a second on a 60 Hz screen one
+  # frame of the screen takes two of ours and the next none, and the pointer moves in uneven
+  # steps. 40 gives every reading two frames of the same size; 60 three, on a 60+ Hz screen.
+  # Changeable in game with /vui debug fps <n> (saved here). Each frame is one small packet
+  # per player with a page open.
+  frame-rate: 40
+  # Whether the client moves the pointer by itself (26.2 and newer clients).
+  #
+  # The pointer is sent as a place and a speed, about twenty times a second while it moves,
+  # and the client's text shader carries it on from there at the screen's own frame rate,
+  # the way it moves display entities between two updates. Smooth on any monitor, and
+  # nothing is sent while the pointer stands still. Clients on the older pack are sent every
+  # frame at frame-rate, as before. Needs the pack rebuilt: it changes the text shader.
+  client-motion: true
+  # How far a client's clock runs ahead of the server's when a packet lands, in ticks.
+  # Client motion hands one packet over to the next without a jump only when this is right.
+  # About 0.8 on a real graphics card at 60 fps, more on a slow one. Each player can tune
+  # their own in /vui cursor; admins with /vui debug clock and /vui debug offset <ticks>.
+  client-clock-offset: 0.9
   # Whether the page is drawn again when the cursor moves onto something else.
   #
   # A page is one long line; sending it costs tens of kilobytes, and doing that every time
