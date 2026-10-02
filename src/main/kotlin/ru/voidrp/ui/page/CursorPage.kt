@@ -20,8 +20,8 @@ import ru.voidrp.ui.widget.eyebrow
 import ru.voidrp.ui.widget.screen
 
 /**
- * Where a player sets the pointer up for themselves: how fast it goes, whether their client
- * moves it (smooth) or it is sent frame by frame, and — for the smooth kind — how far their
+ * Where a player sets the pointer up for themselves: how fast it goes, whether it follows
+ * readings directly or is smoothed, and — for client motion — how far their
  * client's clock runs ahead, lined up by eye against a ruler drawn at the top of the screen.
  *
  * Kept per player ([CursorPrefs]); anything left alone follows the server.
@@ -38,13 +38,15 @@ class CursorPage(
     private val worldPossible: () -> Boolean = { false },
     private val done: () -> Unit = {},
     private val say: (String) -> String = { ru.voidrp.ui.Messages.bundled(it) },
+    private val serverDirect: () -> Boolean = { true },
 ) : Page() {
 
     var isFollowed: Boolean = false
 
     private val mine get() = prefs.of(id)
     private val sensitivity get() = mine.sensitivity ?: serverSensitivity()
-    private val smooth get() = motionPossible() && mine.motion != false
+    private val direct get() = mine.direct ?: serverDirect()
+    private val smooth get() = !direct && motionPossible() && mine.motion != false
     private val inWorld get() = worldPossible() && mine.world == true
     private val offset get() = mine.clockOffset ?: serverOffset()
 
@@ -94,10 +96,11 @@ class CursorPage(
             ),
             setting(
                 say("cursor-page.mode"),
-                say(if (motionPossible()) "cursor-page.mode-hint" else "cursor-page.mode-unavailable"),
-                listOf(
-                    button(say("cursor-page.smooth"), "cur:smooth", if (smooth) Theme.buttonPrimary else Theme.buttonGhost, height = 40),
-                    button(say("cursor-page.frames"), "cur:frames", if (!smooth) Theme.buttonPrimary else Theme.buttonGhost, height = 40),
+                say(if (motionPossible()) "cursor-page.response-hint" else "cursor-page.response-legacy-hint"),
+                listOfNotNull(
+                    button(say("cursor-page.direct"), "cur:direct", if (direct) Theme.buttonPrimary else Theme.buttonGhost, height = 40),
+                    if (motionPossible()) button(say("cursor-page.smooth"), "cur:smooth", if (smooth) Theme.buttonPrimary else Theme.buttonGhost, height = 40) else null,
+                    button(say("cursor-page.frames"), "cur:frames", if (!direct && !smooth) Theme.buttonPrimary else Theme.buttonGhost, height = 40),
                 ),
             ),
             if (smooth) setting(
@@ -153,8 +156,9 @@ class CursorPage(
             "cur:faster" -> prefs.update(this.id) { it.copy(sensitivity = step(sensitivity, +1)) }
             "cur:screen" -> prefs.update(this.id) { it.copy(world = false) }
             "cur:world" -> if (worldPossible()) prefs.update(this.id) { it.copy(world = true) }
-            "cur:smooth" -> prefs.update(this.id) { it.copy(motion = true) }
-            "cur:frames" -> prefs.update(this.id) { it.copy(motion = false) }
+            "cur:direct" -> prefs.update(this.id) { it.copy(direct = true) }
+            "cur:smooth" -> if (motionPossible()) prefs.update(this.id) { it.copy(direct = false, motion = true) }
+            "cur:frames" -> prefs.update(this.id) { it.copy(direct = false, motion = false) }
             "cur:earlier" -> prefs.update(this.id) { it.copy(clockOffset = nudge(offset, -OFFSET_STEP)) }
             "cur:later" -> prefs.update(this.id) { it.copy(clockOffset = nudge(offset, +OFFSET_STEP)) }
             "cur:reset" -> prefs.reset(this.id)

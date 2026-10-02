@@ -161,6 +161,9 @@ class PageManager(
 
     private var frameTask: java.util.concurrent.ScheduledFuture<*>? = null
 
+    /** No added smoothing or client-clock dependency, including on an existing config. */
+    val directCursor: Boolean = plugin.config.getBoolean("input.direct-cursor", true)
+
     /** (Re)starts the frame loop at [frameRate]. */
     private fun schedule() {
         // The loop itself always runs at LOOP_RATE: it reads the aim and, for a client that
@@ -265,6 +268,7 @@ class PageManager(
             worldPossible = { worldPossible(player) },
             done = { then?.let { open(player, it) } },
             say = { key -> messages.text(key) },
+            serverDirect = { directCursor },
         ).also { it.isFollowed = then != null }
         return open(player, page)
     }
@@ -299,6 +303,7 @@ class PageManager(
                 { cursorPrefs?.of(player.uniqueId)?.clockOffset ?: clientClockOffset },
                 { frameRate },
                 { worldPossible(player) && cursorPrefs?.of(player.uniqueId)?.world == true },
+                { cursorPrefs?.of(player.uniqueId)?.direct ?: directCursor },
             )
         // Opened before it is listed: the frame thread walks this list sixty times a second
         // and draws the pointer, and bars stack in the order they first appear. Listed

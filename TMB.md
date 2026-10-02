@@ -14,10 +14,36 @@ hat das behoben: Latin-1 in den Schriftbögen, eigene Schrift über `theme.yml`,
 in Größe 48 und eigene Pack-Dateien aus `plugins/VoidRpUI/pack/`.
 
 **Seit 0.3.19 steckt all das im Original** (Changelog 0.3.19, „From the fork by Noah
-Teetz“). `tmb` weicht derzeit nur um diese Datei und die Versionsnummer vom Original ab.
-**Der Fork ruht deshalb.** Das Burg-Plugin bezieht VoidRP UI seit 0.3.19 wieder direkt
-vom Original. Braucht es erneut eigene Änderungen, entstehen sie hier auf `tmb` nach den
-Abläufen unten, und das Burg-Repo stellt `voidrpUiRepo`/`voidrpUiVersion` zurück auf den Fork.
+Teetz“). Mit **0.3.19-tmb.2** ist der Fork wieder aktiv: für einen direkten Mauszeiger.
+
+## Direkter Zeiger (02.10.2026)
+
+`input.direct-cursor: true` ist Standard, auch wenn der Eintrag in einer bestehenden
+Konfiguration fehlt. Es wird genau ein gewöhnlicher Cursor-Glyph an der zuletzt
+empfangenen Blickposition gezeichnet. Hover und Klicks benutzen diese Position;
+ein Klick zwischen zwei Serverticks wird nicht mehr dem alten Hover-Knopf zugerechnet.
+Keine zusätzliche Glättung, Vorhersage oder Abhängigkeit von der Client-Uhr. Das gilt
+für beide Ressourcenpakete. Die Abfrage läuft mit 60 Hz; die Blickpakete kommen
+normalerweise mit höchstens 20 Hz. Netzwerkverzögerung bleibt, schnelle Bewegungen
+können deshalb sichtbare Schritte haben.
+
+Unter `/vui cursor` ist **Direct** wählbar; die bisherigen Modi **Smooth** und
+**Frame by frame** bleiben zum Vergleich erhalten. Die Auswahl wird als `direct` in
+`cursor.yml` gespeichert. Alte Einstellungen ohne diesen Schlüssel erben den neuen
+Serverstandard; **Server default** setzt die eigene Auswahl zurück. `input.smoothing`,
+`prediction`, `frame-rate` und die Client-Uhr verändern den direkten Modus nicht.
+
+Ursache im ursprünglichen Smooth-Modus: `MotionTimeline` sendet mehrere Glyphen für
+einen Zeitplan, `Shaders` dekodiert die Zeit modulo vier Ticks. Beispielsweise kann ein
+bei Uhr 100,72 erzeugter Plan bei Client-Uhr 100,2 sowohl das Segment bei Tick 100 als
+auch den vorzeitigen Endpunkt mit Zeitmarke 102 anzeigen. Zudem benutzt `PageSession`
+für Hover eine unabhängig geglättete Position. Der direkte Modus umgeht diesen
+Zeitplan vollständig; der experimentelle Smooth-Modus ist dadurch nicht repariert.
+
+Automatisiert geprüft werden schnelle Wechsel, Stillstand, Bildschirmränder,
+Uhrabweichungen, ein einzelner statischer Cursor im tatsächlich erzeugten Bossbar-Text,
+Moduswechsel, Klicks zwischen Ticks und gespeicherte Einstellungen (`DirectCursorTest`).
+Die optische Abnahme mit einem echten Spieler steht noch aus.
 
 ## Wo was liegt
 

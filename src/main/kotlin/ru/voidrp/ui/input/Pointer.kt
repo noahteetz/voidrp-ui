@@ -132,11 +132,24 @@ class Pointer(
      * Carries the pointer forward one frame.
      *
      * [roundTrip] is the player's ping in milliseconds, and [width] / [height] the canvas it
-     * may not leave.
+     * may not leave. [direct] uses the latest reading immediately instead of walking to it.
      */
-    fun frame(now: Long = System.nanoTime(), roundTrip: Int = 0, width: Int, height: Int) {
+    fun frame(now: Long = System.nanoTime(), roundTrip: Int = 0, width: Int, height: Int, direct: Boolean = false) {
         val step = ((now - frameAt) / 1_000_000_000.0).coerceIn(0.001, 0.1)
         frameAt = now
+        if (direct) {
+            // One position for drawing and hit testing. No prediction, settling or clock
+            // schedule: an unchanged reading must stay put even when no packets arrive.
+            estimateX = targetX.coerceIn(0.0, (width - 1).toDouble())
+            estimateY = targetY.coerceIn(0.0, (height - 1).toDouble())
+            x = estimateX
+            y = estimateY
+            speedX = 0.0
+            speedY = 0.0
+            stepX = 0.0
+            stepY = 0.0
+            return
+        }
         val age = (now - sampleAt) / 1_000_000_000.0
 
         // How long is left to cover the distance — and the lead is *in* this, not added to

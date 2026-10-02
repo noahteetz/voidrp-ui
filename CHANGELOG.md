@@ -3,6 +3,22 @@
 Versions follow [semver](https://semver.org/). While the major is zero, breaking changes
 arrive with a minor bump and are named here outright.
 
+## 0.3.19-tmb.2
+
+- Direct cursor mode is the default, including with existing configurations. One static
+  glyph follows the latest received aim, without prediction, smoothing or a shader
+  timeline. Both resource packs work; network delay and the client's look-packet rate
+  still limit responsiveness. `input.direct-cursor` sets the server default.
+- `/vui cursor` offers Direct alongside the existing Smooth and Frame by frame modes;
+  the choice is saved per player. Those two older modes remain available for comparison.
+- Clicks resolve the current cursor position instead of the previous server tick's
+  cached hover, so crossing a button and clicking between ticks hits the right button.
+- Regression tests cover direct movement, stops, boundaries, encoded cursor count,
+  clock skew, mode switches, clicks between ticks and preference persistence.
+- The legacy shader timeline can alias future and past glyphs at its four-tick clock
+  wrap. Direct mode bypasses it; it does not repair the opt-in Smooth mode. In-game
+  visual acceptance is still pending.
+
 ## 0.3.19
 
 **The client moves the pointer itself.** A vanilla client reports where it is looking twenty

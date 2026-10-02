@@ -100,6 +100,12 @@ effects:
 
 # Input
 input:
+  # Draw one cursor at the latest received aim, also used for hover and clicks.
+  # No extra smoothing, prediction, or shader-clock schedule. Updates follow changed
+  # readings (normally 20/s), polled at 60/s; frame-rate does not delay this mode.
+  # Works with both packs. Existing configs default to true too. Players can choose
+  # Direct, Smooth or Frame by frame in /vui cursor; the latter two retain the old modes.
+  direct-cursor: true
   # Canvas units per degree of turn. Higher means a faster cursor.
   sensitivity: 10
   # How many gaps between readings the pointer is given to cover the distance one shows.

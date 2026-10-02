@@ -6,10 +6,10 @@ import java.util.concurrent.ConcurrentHashMap
 import org.bukkit.configuration.file.YamlConfiguration
 
 /**
- * How each player likes their pointer: how fast it goes, whether their client moves it by
- * itself, and how far their client's clock runs ahead of ours.
+ * How each player likes their pointer: speed, direct or smoothed movement, and for client
+ * motion, how far their client's clock runs ahead of ours.
  *
- * All three depend on the player rather than the server — the mouse and its sensitivity,
+ * These depend on the player rather than the server — the mouse and its sensitivity,
  * the graphics card and its frame rate, the connection — so each player sets them for
  * themselves (`/vui cursor`, or a server's own settings page) and they are kept for good.
  * Anything a player has not set follows the server's `input` section.
@@ -22,6 +22,8 @@ class CursorPrefs(private val file: File) {
         val clockOffset: Double? = null,
         /** The page in the world, pointed at with the middle of the view, rather than on the screen. */
         val world: Boolean? = null,
+        /** Follow each received reading immediately, without either smoothing path. */
+        val direct: Boolean? = null,
     )
 
     private val chosen = ConcurrentHashMap<UUID, Prefs>()
@@ -37,6 +39,7 @@ class CursorPrefs(private val file: File) {
                 motion = if (section.isSet("motion")) section.getBoolean("motion") else null,
                 clockOffset = if (section.isSet("clock-offset")) section.getDouble("clock-offset").coerceIn(OFFSET_MIN, OFFSET_MAX) else null,
                 world = if (section.isSet("world")) section.getBoolean("world") else null,
+                direct = if (section.isSet("direct")) section.getBoolean("direct") else null,
             )
         }
     }
@@ -63,6 +66,7 @@ class CursorPrefs(private val file: File) {
             p.motion?.let { yaml.set("$id.motion", it) }
             p.clockOffset?.let { yaml.set("$id.clock-offset", it) }
             p.world?.let { yaml.set("$id.world", it) }
+            p.direct?.let { yaml.set("$id.direct", it) }
         }
         runCatching {
             file.parentFile?.mkdirs()

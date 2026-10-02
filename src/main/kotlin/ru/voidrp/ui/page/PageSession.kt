@@ -101,6 +101,8 @@ class PageSession(
      * pointer is the middle of their view. Asked once, when the page opens.
      */
     private val worldMode: () -> Boolean = { false },
+    /** One cursor at the latest aim, shared with hover and clicks; no added delay. */
+    private val directCursor: () -> Boolean = { true },
 ) {
 
     /** The page in the world, when it is drawn there; null on the screen. */
@@ -180,7 +182,7 @@ class PageSession(
     }
 
     /** Whether the pointer goes as a place and a speed right now. */
-    private fun moves(now: Long): Boolean = clientMotion() && clock(now) != null
+    private fun moves(now: Long): Boolean = !directCursor() && clientMotion() && clock(now) != null
 
     /** The round trip to this player, refreshed now and then rather than every frame. */
     private var roundTrip = 0
@@ -247,7 +249,8 @@ class PageSession(
     fun timing(): String {
         val now = System.nanoTime()
         val believed = Math.round(pointer.trust(now) * 100)
-        return "at ${cursorX},${cursorY} on ${viewport.width}×${Shaders.CANVAS_HEIGHT} over ${under?.id ?: "nothing"} · " +
+        val mode = if (directCursor()) "direct" else if (moves(now)) "client motion" else "smoothed frames"
+        return "$mode · at ${cursorX},${cursorY} on ${viewport.width}×${Shaders.CANVAS_HEIGHT} over ${under?.id ?: "nothing"} · " +
             "ping ${ping()}ms · lead ${Math.round(pointer.lead(ping()) * 1000)}ms · " +
             "readings every ${Math.round(pointer.gap * 1000)}ms, " +
             "last ${pointer.age(now)}ms ago ($believed% believed) · " +
@@ -341,7 +344,12 @@ class PageSession(
         // would eat the very readings the tracker is waiting for. This tick only asks what
         // the pointer is over now, because answering that means drawing the page again and
         // that can only happen on this thread.
-        val over = regions.lastOrNull { it.contains(cursorX, cursorY) }
+        val over = synchronized(drawing) { regions.lastOrNull { it.contains(cursorX, cursorY) } }
+        updateHover(over)
+    }
+
+    /** Keep page hover and tooltips current on the server thread, including before a click. */
+    private fun updateHover(over: Layout.Region?) {
         if (over?.id != hovered) {
             // Whatever the pointer has just left, and whatever it has just reached: if
             // either of them cannot be highlighted on the pointer's own bar, the page draws
@@ -445,7 +453,7 @@ class PageSession(
      * difference between a pointer that steps and one that moves. The page itself is
      * already encoded, so a frame costs one small run and a packet.
      */
-    fun frame() {
+    fun frame(): Unit = synchronized(drawing) {
         if (closed) return
         val before = cursorX to cursorY
         val wasOver = under
@@ -455,26 +463,31 @@ class PageSession(
             return
         }
         val sampled = readAim(now)
+        val direct = directCursor()
+        val modeChanged = direct != wasDirect
+        wasDirect = direct
         pointer.smoothing = smoothing()
         pointer.prediction = prediction()
-        pointer.frame(now, ping(), viewport.width, Shaders.CANVAS_HEIGHT)
+        pointer.frame(now, ping(), viewport.width, Shaders.CANVAS_HEIGHT, direct)
+        if (modeChanged) timeline.place(pointer.x, pointer.y)
         record(now)
         under = regions.lastOrNull { it.contains(cursorX, cursorY) }
         if (under?.id != null && under?.id != wasOver?.id) sounds.hover(player)
         if (moves(now)) {
-            frameMoving(now, sampled, wasOver?.id != under?.id)
+            frameMoving(now, sampled || modeChanged, wasOver?.id != under?.id)
             return
         }
-        if (before == cursorX to cursorY && wasOver?.id == under?.id) return
+        if (!modeChanged && before == cursorX to cursorY && wasOver?.id == under?.id) return
         // The loop runs faster than a pointer sent frame by frame may go: a frame skipped
         // here is caught up by the next one allowed, which draws wherever the pointer is then.
-        if (now - drawnAt < 1_000_000_000L / frameRate().coerceAtLeast(1) && wasOver?.id == under?.id) return
+        if (!direct && !modeChanged && now - drawnAt < 1_000_000_000L / frameRate().coerceAtLeast(1) && wasOver?.id == under?.id) return
         drawnAt = now
         draw()
     }
 
     /** When a pointer sent frame by frame last went. */
     private var drawnAt = 0L
+    private var wasDirect = directCursor()
 
     /**
      * A frame for a page in the world: where the middle of the view meets the page is the
@@ -631,6 +644,12 @@ class PageSession(
 
     fun click(button: Button) {
         if (closed) return
+        // The tick's cached hover can be a whole tick behind the cursor already sent by
+        // the frame loop. Resolve against that displayed position, without reading a
+        // newer (not yet drawn) aim here. Page callbacks still run on the server thread.
+        val (clickX, clickY, hit) = synchronized(drawing) {
+            Triple(cursorX, cursorY, regions.lastOrNull { it.contains(cursorX, cursorY) })
+        }
         val now = System.currentTimeMillis()
         val pressed = now - lastSwing > HOLD_GAP_MS
         val held = !pressed && now - lastSwing < DRAG_GAP_MS
@@ -638,14 +657,15 @@ class PageSession(
         if (held) {
             // A held button over something is a drag: the swings that mean "still down"
             // arrive every tick, which is as good a stream of drag events as we can get.
-            dragging?.let { page.onDrag(it, cursorX, cursorY) }
+            dragging?.let { page.onDrag(it, clickX, clickY) }
             return
         }
         if (!pressed) return
-        dragging = hovered
-        hovered?.let {
+        dragging = hit?.id
+        updateHover(hit)
+        hit?.let {
             sounds.click(player)
-            page.onClick(it, button)
+            page.onClick(it.id, button)
         }
     }
 
@@ -909,7 +929,7 @@ class PageSession(
         val lift = cursorLift()
         val now = System.nanoTime()
         val clock = clock(now)
-        if (clientMotion() && clock != null) {
+        if (!directCursor() && clientMotion() && clock != null) {
             if (replan && !timeline.resting) {
                 traceLine { "plan,$now,$clock,${timeline.glyphs().joinToString(";") { "${it.x}/${it.y}/${it.tick}/${it.vx}/${it.vy}" }},${pointer.targetX},${pointer.targetY}" }
             }

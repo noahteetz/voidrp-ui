@@ -17,6 +17,14 @@ icons and a cursor that answers the mouse.
 
 A Paper plugin, MIT licensed.
 
+**TMB fork 0.3.19-tmb.2:** the default cursor follows the latest received aim directly,
+with one glyph and no extra smoothing or shader-clock schedule. Choose **Direct** in
+`/vui cursor`; **Smooth** and **Frame by frame** retain the previous modes for comparison.
+`input.direct-cursor: true` is also the default when upgrading an existing config.
+Look packets still arrive at about 20 Hz, so fast movement can show discrete steps.
+See [TMB.md](TMB.md) for the diagnosis, fork build and remaining in-game checks. Download
+this build from [the fork's releases](https://github.com/noahteetz/voidrp-ui/releases).
+
 Clients from 1.21.6 to 26.1.2 are served too. Mojang renamed the text shader in 26.2 and a
 pack names its files outright, so one archive cannot cover both versions — the plugin
 builds two packs and hands each player the one their client can read.
