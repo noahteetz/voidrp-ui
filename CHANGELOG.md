@@ -3,6 +3,11 @@
 Versions follow [semver](https://semver.org/). While the major is zero, breaking changes
 arrive with a minor bump and are named here outright.
 
+## 0.3.20-tmb.2
+
+Same code as 0.3.20-tmb.1. JitPack failed to open the Gradle wrapper while building that
+tag and keeps the failed build, so the release is cut again under a new version.
+
 ## 0.3.20-tmb.1
 
 The fork's 0.3.19-tmb.2 (direct cursor) on top of 0.3.20: the client's own grey text
